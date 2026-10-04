@@ -2,10 +2,16 @@ import axios from 'axios';
 import * as cheerio from 'cheerio';
 import fs from 'fs';
 import path from 'path';
+import { INITIAL_CACHE } from './initialCache.ts';
 
 export const BASE = 'https://manwhaku.my.id';
 export const CACHE_TTL = 6 * 60 * 60 * 1000; // 6 JAM
-const CACHE_FILE = path.resolve(process.cwd(), 'cache_storage.json');
+
+// DI LINGKUNGAN VERCEL SERVERLESS HANYA DIREKTORI /tmp YANG DAPAT DITULIS
+const IS_VERCEL = !!process.env.VERCEL;
+const CACHE_FILE = IS_VERCEL
+  ? path.resolve('/tmp', 'cache_storage.json')
+  : path.resolve(process.cwd(), 'cache_storage.json');
 
 export const SOURCES = [
   '/manga',
@@ -40,12 +46,6 @@ export interface CacheState {
   items: ComicItem[];
   logs: Array<{ timestamp: string; type: 'INFO' | 'SUCCESS' | 'WARN' | 'ERROR'; message: string }>;
 }
-
-let cache: CacheState = {
-  t: 0,
-  items: [],
-  logs: []
-};
 
 // CACHE DALAM MEMORI UNTUK RESPON SUB-MILIDETIK
 const detailCache = new Map<string, { t: number; data: MangaDetail }>();
@@ -83,24 +83,32 @@ export function classifyComic(title: string, slug: string, originalType?: string
   return 'manhwa';
 }
 
-// MEMUAT CACHE PERSISTEN DARI DISK JIKA TERSEDIA
+// INISIALISASI DENGAN INITIAL_CACHE TERBUNDEL AGAR VERCEL LANGSUNG MEMILIKI 330+ KOMIK SAAT COLD BOOT
+const initialData = INITIAL_CACHE as unknown as CacheState;
+let cache: CacheState = {
+  t: initialData?.t || Date.now(),
+  items: (initialData?.items || []).map((i) => ({
+    ...i,
+    type: classifyComic(i.title, i.slug, i.type)
+  })),
+  logs: initialData?.logs || []
+};
+
+// MEMUAT CACHE PERSISTEN TAMBAHAN DARI DISK JIKA TERSEDIA
 try {
   if (fs.existsSync(CACHE_FILE)) {
     const raw = fs.readFileSync(CACHE_FILE, 'utf-8');
     const parsed = JSON.parse(raw);
     if (parsed && Array.isArray(parsed.items) && parsed.items.length > 0) {
       cache = parsed;
-      // KLASIFIKASI ULANG SECARA AKURAT KE MANGA (JEPANG), MANHWA (KOREA), DAN MANHUA (CHINA)
       cache.items = cache.items.map((i) => ({
         ...i,
         type: classifyComic(i.title, i.slug, i.type)
       }));
-      fs.writeFileSync(CACHE_FILE, JSON.stringify(cache, null, 2), 'utf-8');
-      console.log(`[DANSKOMIK] Cache dimuat dari disk: ${cache.items.length} komik terklasifikasi akurat.`);
     }
   }
 } catch (e) {
-  console.warn('[DANSKOMIK] Gagal membaca cache disk:', e);
+  // PENGECUALIAN DIABAIKAN PADA FILE SYSTEM READ-ONLY
 }
 
 let building: Promise<ComicItem[]> | null = null;
@@ -230,7 +238,7 @@ export async function runBuild(): Promise<ComicItem[]> {
     cache.t = now;
     cache.items = items;
     addLog('SUCCESS', `Cache selesai dibangun: ${items.length} komik terindeks.`);
-    // MENYIMPAN KE DISK UNTUK START INSTAN TANPA DELAY
+    // MENYIMPAN KE DISK JIKA BUKAN READ-ONLY FILE SYSTEM
     try {
       fs.writeFileSync(CACHE_FILE, JSON.stringify(cache, null, 2), 'utf-8');
     } catch {}
@@ -400,6 +408,8 @@ export async function scrapeDetail(slug: string): Promise<MangaDetail> {
         if (lcMatch) latestChapterSlug = lcMatch[1];
         const statusMatch = unescaped.match(/"status":"(.*?)"/);
         if (statusMatch) status = statusMatch[1].toUpperCase();
+        const typeMatch = unescaped.match(/"type":"(.*?)"/);
+        if (typeMatch) type = typeMatch[1].toUpperCase();
         const ratingMatch = unescaped.match(/"initialRating":"(.*?)"/);
         if (ratingMatch) rating = parseFloat(ratingMatch[1]) || null;
       } catch {}
@@ -555,8 +565,8 @@ export async function scrapeChapter(chapterSlug: string): Promise<ChapterDetail>
   return result;
 }
 
-// PEMANASAN CACHE DI LATAR BELAKANG JIKA KOSONG
-if (cache.items.length === 0) {
+// PEMANASAN CACHE DI LATAR BELAKANG JIKA KOSONG (HANYA BILA BUKAN SERVERLESS VERCEL)
+if (cache.items.length === 0 && !IS_VERCEL) {
   setTimeout(() => {
     buildCache(false).catch((e) => {
       console.warn('Initial warming error:', e.message);

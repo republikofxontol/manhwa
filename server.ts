@@ -235,4 +235,10 @@ async function startServer() {
   });
 }
 
-startServer();
+// HANYA JALANKAN SERVER LISTEN MANDIRI JIKA BUKAN BERADA DI VERCEL SERVERLESS
+if (!process.env.VERCEL) {
+  startServer();
+}
+
+export default app;
+export { app };
