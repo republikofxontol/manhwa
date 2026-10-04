@@ -1,0 +1,6 @@
+{
+  "name": "dansmanwha",
+  "description": "Industrial Cyber-Terminal Manga & Manhwa Reader and Discovery Platform.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
